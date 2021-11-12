@@ -1,0 +1,176 @@
+#lang forge
+#lang forge
+
+abstract sig Command {}
+one sig Unlock extends Command {}
+one sig Lock extends Command {}
+
+sig Mutex{}
+sig Program {}
+
+sig Code {
+    owner : one Program,
+    target : one Mutex,
+    operation : one Command,
+    nextLine : lone Code
+}
+
+sig State {
+    // We want a chain of states
+    next : lone State,
+    // code that has yet to be run
+    toRun : set Code,
+    // Current programs that hold mutexes
+    locks : set Program -> Mutex
+}
+
+pred ValidStates {
+    all s : State | all ins: s.toRun | {
+        -- in toRun, each program have at most one entries
+        ins.owner not in (s.toRun - ins).owner
+    }
+
+    -- each program 
+    all p: Program | some first: Code {
+        -- each program have at least one line of code
+        first.owner = p
+
+        -- truly the first line
+        no nextLine.first
+
+        -- every code in this program is reachable from first
+        owner.p in first.*nextLine
+
+        -- the subsequence code is also from the same owner
+        first.^nextLine.owner in first.owner
+    }
+
+    -- the code is linear (injective)
+    nextLine.~nextLine in iden
+}
+
+test expect ValidTest {
+    {
+        ValidStates implies {
+            all ins: Code | {
+                -- every code in next lines belong to the same program
+                ins.^nextLine.owner in ins.owner
+            }
+
+            -- no cycle in the program
+            no iden & ^nextLine
+
+            -- each program should have at least one line of code
+            Program in Code.owner
+
+            -- in a state, no two code may have the same owner
+            not (some s: State | some c1, c2: s.toRun | c1 != c2 and c1.owner in c2.owner)
+        }
+    } for 4 Program, 8 Code is theorem
+}
+
+pred canTransition[s1: State, s2: State] {
+    -- Cannot cause a deadlock
+    -- Cannot unlock a mutex that is not locked by the program
+    -- program1 locking mutex1 implies program1 unlocking mutex1 in LineOfCode
+    some running: s1.toRun | {
+        -- every other lines is not changing
+        s1.toRun - running + running.nextLine = s2.toRun
+
+        running.operation = Lock implies {
+            running.target not in s1.locks[Program]
+            running.target in s2.locks[Program]
+            s2.locks - Program->(running.target) =  s1.locks -- every other locks stay the same
+        }
+        running.operation = Unlock implies {
+            running.target in s1.locks[Program]
+            running.target not in s2.locks[Program]
+            s1.locks - Program->(running.target) = s2.locks -- every other locks stay the same
+            
+            -- NOTE: ownership is right, maybe put this in good?
+            running.owner in s1.locks.(running.target)
+        }
+    } 
+}
+
+pred finalWithDeadlock[s: State] {
+    no s.next
+    all runnable: s.toRun | {
+        runnable.operation = Lock
+        runnable.target in s.locks[Program]
+    }
+}
+
+pred finalWithoutDeadlock[s : State] {
+    no s.next
+    // No more code to run
+    s.toRun = none
+    // No locks
+    no s.locks
+}
+
+pred initState[s : State] {
+    // All code is reachable from the start
+    Code = s.toRun.*nextLine
+    // No locks
+    no s.locks
+}
+
+pred TransitionStatesSafe {
+    some start, end : State | {
+        initState[start]
+        finalWithoutDeadlock[end]
+        State in start.*next
+        all s1, s2 : State {
+            s1.next = s2 implies {canTransition[s1, s2]}
+        }
+    }
+}
+
+pred TransitionStatesUnsafe {
+    some start, end : State | {
+        initState[start]
+        finalWithDeadlock[end]
+        State in start.*next
+        all s1, s2 : State {
+            s1.next = s2 implies {canTransition[s1, s2]}
+        }
+    }
+}
+
+-- for testing the transition function
+pred good[s: State] {
+    -- no mutex is held by two programs
+    s.locks.~(s.locks) in iden
+}
+
+/*
+example testGood is good[State] for {
+    State = state1
+    Program = prog1
+    Mutex = mutex1 + mutex2
+    locks = state1->prog1->mutex1 + state1->prog1->mutex2
+}
+
+example testGood2 is not good[State] for {
+    State = state1
+    Program = prog1 + prog2
+    Mutex = mutex1
+    locks = state1->prog1->mutex1 + state1->prog2->mutex1
+}
+*/
+
+test expect {
+    goodTransitionSafe: {
+        ValidStates and TransitionStatesSafe implies (all s: State | good[s])
+    } is theorem 
+
+    goodTransitionUnsafe: { 
+        ValidStates and TransitionStatesUnsafe implies (all s: State | good[s])
+    } is theorem 
+}
+
+run {
+    ValidStates
+    TransitionStatesSafe 
+} for exactly 5 State, exactly 2 Program, exactly 1 Mutex, exactly 2 Command, 5 Code

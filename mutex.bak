@@ -1,0 +1,21 @@
+#lang forge
+
+abstract sig Command {}
+one sig Unlock extends Command {}
+one sig Lock extends Command {}
+
+sig Mutex{}
+sig Program {}
+
+sig Code{
+    owner : one Program
+    operation : one Command
+    target : one Mutex
+    nextLine : lone Code
+}
+
+sig State {
+    next : lone State
+    toRun : lone Code
+    locks : set Program -> Mutex
+}
